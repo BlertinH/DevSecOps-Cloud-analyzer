@@ -1,9 +1,5 @@
-"""Small helpers that build tiny Terraform plans for tests.
-
-A real plan has hundreds of lines. For a unit test we only need a few
-resources, so make_plan builds the two parts of a plan that iacgraph reads:
-"resource_changes" (the settings) and "configuration" (the references).
-"""
+from iacgraph.graph import build_infrastructure_graph
+from iacgraph.plan import get_references, get_resources
 
 
 def resource(address, values=None, refs=None, unknown=()):
@@ -43,3 +39,11 @@ def make_plan(*resources):
             expressions[attribute] = {"references": references}
         blocks.append({"address": item["address"], "expressions": expressions})
     return {"resource_changes": changes, "configuration": {"root_module": {"resources": blocks}}}
+
+
+def make_graph(*resources):
+    """The infrastructure graph of a tiny plan."""
+    plan = make_plan(*resources)
+    warnings = []
+    found = get_resources(plan, warnings)
+    return build_infrastructure_graph(found, get_references(plan, found, warnings))
