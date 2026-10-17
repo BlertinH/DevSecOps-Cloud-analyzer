@@ -184,3 +184,88 @@ def test_a_database_uses_the_subnets_of_its_subnet_group():
     assert database["kind"] == "database"
     assert database["subnets"] == ["aws_subnet.private"]
     assert not database["public"] and not database["internet_route"]
+
+
+def ssh_from_anywhere():
+    return resource(
+        "aws_vpc_security_group_ingress_rule.web_ssh",
+        {"ip_protocol": "tcp", "from_port": 22, "to_port": 22, "cidr_ipv4": "0.0.0.0/0"},
+        {"security_group_id": ["aws_security_group.web"]},
+    )
+
+
+def edges(graph):
+    """(source, target, label) of every network edge, sorted."""
+    return sorted((edge["source"], edge["target"], edge["label"]) for edge in network.find_network_edges(graph, []))
+
+
+def test_a_public_server_with_ssh_open_is_reachable_from_the_internet():
+    graph = make_graph(*a_vpc_with_public_and_private_subnets(), ssh_from_anywhere(), server("web", "public"))
+    assert edges(graph) == [(network.INTERNET, "aws_instance.web", "tcp/22")]
+
+
+def test_the_same_rule_on_a_server_in_a_private_subnet_creates_no_edge():
+    """The firewall rule alone looks dangerous; the graph shows nobody can reach it."""
+    graph = make_graph(*a_vpc_with_public_and_private_subnets(), ssh_from_anywhere(), server("web", "private"))
+    assert edges(graph) == []
+
+
+def test_a_rule_for_one_office_network_is_not_the_whole_internet():
+    office_ssh = resource(
+        "aws_vpc_security_group_ingress_rule.office_ssh",
+        {"ip_protocol": "tcp", "from_port": 22, "to_port": 22, "cidr_ipv4": "203.0.113.0/24"},
+        {"security_group_id": ["aws_security_group.web"]},
+    )
+    graph = make_graph(*a_vpc_with_public_and_private_subnets(), office_ssh, server("web", "public"))
+    assert edges(graph) == []
+
+
+def web_and_database(web_egress=True):
+    """A private web server and a private database that accepts MySQL from the web group."""
+    resources = [
+        *a_vpc_with_public_and_private_subnets(),
+        resource("aws_security_group.db", refs={"vpc_id": ["aws_vpc.main"]}),
+        server("web", "public", public_ip=False),
+        resource("aws_db_subnet_group.main", refs={"subnet_ids": ["aws_subnet.private"]}),
+        resource(
+            "aws_db_instance.main",
+            {"publicly_accessible": False},
+            {"db_subnet_group_name": ["aws_db_subnet_group.main"], "vpc_security_group_ids": ["aws_security_group.db"]},
+        ),
+        resource(
+            "aws_vpc_security_group_ingress_rule.db_from_web",
+            {"ip_protocol": "tcp", "from_port": 3306, "to_port": 3306},
+            {"security_group_id": ["aws_security_group.db"], "referenced_security_group_id": ["aws_security_group.web"]},
+        ),
+    ]
+    if web_egress:
+        resources.append(
+            resource(
+                "aws_vpc_security_group_egress_rule.web_all",
+                {"ip_protocol": "-1", "cidr_ipv4": "0.0.0.0/0"},
+                {"security_group_id": ["aws_security_group.web"]},
+            )
+        )
+    return make_graph(*resources)
+
+
+def test_the_web_server_can_connect_to_the_database():
+    assert edges(web_and_database()) == [("aws_instance.web", "aws_db_instance.main", "tcp/3306")]
+
+
+def test_without_an_egress_rule_the_web_server_cannot_connect():
+    assert edges(web_and_database(web_egress=False)) == []
+
+
+def test_the_insecure_demo_has_ssh_and_https_from_the_internet_and_mysql_inside():
+    from iacgraph.graph import build_infrastructure_graph
+    from iacgraph.plan import get_references, get_resources, load_plan
+
+    plan = load_plan("tests/fixtures/demo-insecure.plan.json")
+    resources = get_resources(plan, [])
+    graph = build_infrastructure_graph(resources, get_references(plan, resources, []))
+    assert edges(graph) == [
+        ("aws_instance.web", "aws_db_instance.main", "tcp/3306"),
+        (network.INTERNET, "aws_instance.web", "tcp/22"),
+        (network.INTERNET, "aws_instance.web", "tcp/443"),
+    ]

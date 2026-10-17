@@ -237,3 +237,74 @@ def get_workloads(graph, warnings):
         if not workload["groups"]:
             warnings.append(f"{address}: no security group of the plan is attached; its firewall rules are not visible")
     return workloads
+
+INTERNET = "internet"
+
+
+def rules_of(rules, groups, direction):
+    """The rules of these security groups in one direction."""
+    return [rule for rule in rules if rule["group"] in groups and rule["direction"] == direction]
+
+
+def rule_admits(rule, workload):
+    """Does the rule accept this workload as the other side of the connection?"""
+    if set(rule["peers"]) & set(workload["groups"]):
+        return True
+    for cidr in rule["cidrs"]:
+        if not workload["cidrs"]:
+            return True  # the workload's addresses are not known: assume yes
+        if any(cidr_contains(cidr, workload_cidr) for workload_cidr in workload["cidrs"]):
+            return True
+    return False
+
+
+def same_network(workload_a, workload_b):
+    """Are both in the same VPC? If a VPC is unknown, assume yes."""
+    if workload_a["vpc"] is None or workload_b["vpc"] is None:
+        return True
+    return workload_a["vpc"] == workload_b["vpc"]
+
+
+def network_edge(source, target, rule):
+    return {
+        "source": source,
+        "target": target,
+        "kind": "network",
+        "label": describe_ports(rule),  # e.g. "tcp/22"
+        "cause": rule["resource"],  # the resource that creates this edge
+        "rule": rule,
+    }
+
+
+def find_network_edges(graph, warnings):
+    """Every network edge of the attack graph. One edge per firewall rule."""
+    rules = get_firewall_rules(graph, warnings)
+    workloads = get_workloads(graph, warnings)
+    edges = []
+
+    # 1. From the Internet: a public address AND a route to an Internet gateway
+    #    AND an ingress rule that accepts everyone (0.0.0.0/0).
+    for address, workload in workloads.items():
+        if not (workload["public"] and workload["internet_route"]):
+            continue
+        for rule in rules_of(rules, workload["groups"], "ingress"):
+            if any(is_anywhere(cidr) for cidr in rule["cidrs"]):
+                edges.append(network_edge(INTERNET, address, rule))
+
+    # 2. Between workloads (lateral movement): the source's egress rule lets the
+    #    traffic out AND the target's ingress rule lets it in.
+    for source, source_workload in workloads.items():
+        if source_workload["kind"] != "compute":
+            continue  # a managed database never opens connections itself
+        outgoing = rules_of(rules, source_workload["groups"], "egress")
+        for target, target_workload in workloads.items():
+            if target == source or not same_network(source_workload, target_workload):
+                continue
+            for incoming in rules_of(rules, target_workload["groups"], "ingress"):
+                if not rule_admits(incoming, source_workload):
+                    continue
+                for rule_out in outgoing:
+                    if rule_admits(rule_out, target_workload) and same_traffic(incoming, rule_out):
+                        edges.append(network_edge(source, target, incoming))
+                        break
+    return edges
