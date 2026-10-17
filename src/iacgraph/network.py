@@ -1,7 +1,6 @@
-
 import ipaddress
 
-from .graph import referenced, resources_of_type, value
+from .graph import is_unknown, referenced, referenced_by, resources_of_type, value
 
 PROTOCOL_NAMES = {"-1": "all", "6": "tcp", "17": "udp", "1": "icmp"}
 
@@ -142,3 +141,99 @@ def cidr_contains(outer, inner):
     except ValueError:
         return False
     return outer_network.version == inner_network.version and inner_network.subnet_of(outer_network)
+    # ---------------------------------------------------------------------------
+# 2. Workloads: public address, route to the Internet, security groups
+# ---------------------------------------------------------------------------
+
+
+def instance_is_public(graph, instance, subnets):
+    """Will the server get a public IP address?"""
+    # An Elastic IP attached to the server.
+    if referenced_by(graph, instance, "instance", "aws_eip"):
+        return True
+    if referenced_by(graph, instance, "instance_id", "aws_eip_association"):
+        return True
+    # Set on the server itself.
+    setting = value(graph, instance, "associate_public_ip_address")
+    if setting is not None and not is_unknown(graph, instance, "associate_public_ip_address"):
+        return setting is True
+    # Not set: the subnet decides. If we do not know the subnet, assume the worst.
+    if not subnets:
+        return True
+    for subnet in subnets:
+        if value(graph, subnet, "map_public_ip_on_launch") is True:
+            return True
+        if is_unknown(graph, subnet, "map_public_ip_on_launch"):
+            return True
+    return False
+
+
+def table_routes_to_internet(graph, table):
+   
+    # Routes written as separate aws_route resources.
+    for route in referenced_by(graph, table, "route_table_id", "aws_route"):
+        to_gateway = referenced(graph, route, "gateway_id", "aws_internet_gateway")
+        existing_gateway = str(value(graph, route, "gateway_id")).startswith("igw-")
+        if value(graph, route, "destination_cidr_block") == "0.0.0.0/0" and (to_gateway or existing_gateway):
+            return True
+    # Routes written as "route" blocks inside the route table.
+    to_gateway = referenced(graph, table, "route", "aws_internet_gateway")
+    for block in value(graph, table, "route") or []:
+        existing_gateway = str(block.get("gateway_id")).startswith("igw-")
+        if block.get("cidr_block") == "0.0.0.0/0" and (to_gateway or existing_gateway):
+            return True
+    return False
+
+
+def main_route_tables(graph, vpc):
+    """The VPC's main route table: used by every subnet without its own route table."""
+    tables = referenced_by(graph, vpc, "default_route_table_id", "aws_default_route_table")
+    for association in referenced_by(graph, vpc, "vpc_id", "aws_main_route_table_association"):
+        tables += referenced(graph, association, "route_table_id")
+    return tables
+
+
+def subnet_routes_to_internet(graph, subnet):
+    """Can the Internet reach a public address in this subnet?"""
+    tables = []
+    for association in referenced_by(graph, subnet, "subnet_id", "aws_route_table_association"):
+        tables += referenced(graph, association, "route_table_id")
+    if not tables:
+        for vpc in referenced(graph, subnet, "vpc_id", "aws_vpc"):
+            tables += main_route_tables(graph, vpc)
+    return any(table_routes_to_internet(graph, table) for table in tables)
+
+
+def get_workloads(graph, warnings):
+    """Servers and databases, with everything that decides who can reach them.
+
+    Returns a dictionary: address -> {"kind", "subnets", "public", "groups",
+                                      "vpc", "cidrs", "internet_route"}
+    """
+    workloads = {}
+    for address in resources_of_type(graph, "aws_instance"):
+        subnets = referenced(graph, address, "subnet_id", "aws_subnet")
+        public = instance_is_public(graph, address, subnets)
+        workloads[address] = {"kind": "compute", "subnets": subnets, "public": public}
+
+    for address in resources_of_type(graph, "aws_db_instance"):
+        subnets = []
+        for subnet_group in referenced(graph, address, "db_subnet_group_name", "aws_db_subnet_group"):
+            subnets += referenced(graph, subnet_group, "subnet_ids", "aws_subnet")
+        public = value(graph, address, "publicly_accessible") is True or is_unknown(graph, address, "publicly_accessible")
+        workloads[address] = {"kind": "database", "subnets": subnets, "public": public}
+
+    for address, workload in workloads.items():
+        subnets = workload["subnets"]
+        workload["groups"] = referenced(graph, address, "vpc_security_group_ids", "aws_security_group")
+        vpcs = [vpc for subnet in subnets for vpc in referenced(graph, subnet, "vpc_id", "aws_vpc")]
+        workload["vpc"] = vpcs[0] if vpcs else None
+        workload["cidrs"] = [value(graph, subnet, "cidr_block") for subnet in subnets if value(graph, subnet, "cidr_block")]
+        if subnets:
+            workload["internet_route"] = any(subnet_routes_to_internet(graph, subnet) for subnet in subnets)
+        else:
+            warnings.append(f"{address}: its subnet is not in the plan; assumed to have a route to the Internet")
+            workload["internet_route"] = True
+        if not workload["groups"]:
+            warnings.append(f"{address}: no security group of the plan is attached; its firewall rules are not visible")
+    return workloads
