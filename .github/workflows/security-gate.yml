@@ -1,0 +1,57 @@
+name: security-gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  id-token: write        # get a GitHub OIDC token, to sign in to AWS without keys
+  security-events: write # upload the findings (SARIF) to the Security tab
+
+jobs:
+  iacgraph:
+    runs-on: ubuntu-latest
+    env:
+      TF_DIR: terraform/demo-secure
+      TF_VAR_bucket_suffix: ${{ vars.DEMO_BUCKET_SUFFIX }}
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v6
+
+      - name: Sign in to AWS with the read-only plan role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install iacgraph
+        run: pip install .
+
+      - name: Terraform plan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          terraform plan -input=false -out=tfplan
+          terraform show -json tfplan > plan.json
+
+      - name: Write the findings as SARIF
+        run: iacgraph $TF_DIR/plan.json --policy $TF_DIR/policy.json --format sarif --source-dir $TF_DIR --output results.sarif || true
+
+      - name: Show the findings in the Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
+          category: iacgraph
+
+      - name: Security gate (PASS or BLOCK)
+        run: iacgraph $TF_DIR/plan.json --policy $TF_DIR/policy.json
