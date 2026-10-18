@@ -37,3 +37,12 @@ def test_an_error_fails_closed(tmp_path, capsys):
     """If the analysis cannot run, the exit code is 2, and the pipeline blocks."""
     assert main([str(tmp_path / "missing.json")]) == 2
     assert "error" in capsys.readouterr().err
+
+def test_sarif_points_at_the_line_of_the_resource(tmp_path):
+    report = tmp_path / "results.sarif"
+    main([INSECURE, "--policy", INSECURE_POLICY, "--format", "sarif", "--source-dir", "terraform/demo-insecure", "--output", str(report)])
+    results = json.loads(report.read_text())["runs"][0]["results"]
+    ssh = [r for r in results if r["ruleId"] == "NET-01"][0]
+    location = ssh["locations"][0]["physicalLocation"]
+    assert location["artifactLocation"]["uri"] == "terraform/demo-insecure/security.tf"
+    assert location["region"]["startLine"] > 0
