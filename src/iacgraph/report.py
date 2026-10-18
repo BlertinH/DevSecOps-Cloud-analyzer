@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from . import __version__
 from .paths import describe_path, is_accepted
@@ -78,3 +79,48 @@ def json_report(result):
         },
     }
     return json.dumps(report, indent=2) + "\n"
+
+
+SARIF_LEVELS = {"critical": "error", "high": "error", "medium": "warning", "low": "note"}
+
+
+def find_resource_lines(source_dir):
+    """Where each resource is written: {"aws_instance.web": ("terraform/demo/compute.tf", 17)}."""
+    found = {}
+    for tf_file in sorted(Path(source_dir).glob("*.tf")):
+        lines = tf_file.read_text(encoding="utf-8").splitlines()
+        for number, line in enumerate(lines, start=1):
+            # resource "aws_instance" "web" {   ->   ['resource ', 'aws_instance', ' ', 'web', ' {']
+            parts = line.split('"')
+            if line.strip().startswith("resource") and len(parts) >= 5:
+                found[f"{parts[1]}.{parts[3]}"] = (tf_file.as_posix(), number)
+    return found
+
+
+def sarif_report(result, source_dir):
+    """Findings in SARIF, each pointing at the line of its resource in a .tf file."""
+    lines = find_resource_lines(source_dir)
+    results = []
+    for finding in result["findings"]:
+        address = finding["resource"].split("[")[0]  # aws_instance.web[0] -> aws_instance.web
+        tf_file, line = lines.get(address, (f"{source_dir}/main.tf", 1))
+        results.append(
+            {
+                "ruleId": finding["rule"],
+                "level": SARIF_LEVELS[finding["severity"]],
+                "message": {"text": f"[{finding['severity'].upper()}] {finding['message']}"},
+                "locations": [
+                    {"physicalLocation": {"artifactLocation": {"uri": tf_file}, "region": {"startLine": line}}}
+                ],
+            }
+        )
+    rules = [
+        {"id": rule_id, "shortDescription": {"text": rule["title"]}, "help": {"text": rule["fix"]}}
+        for rule_id, rule in RULES.items()
+    ]
+    sarif = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{"tool": {"driver": {"name": "iacgraph", "version": __version__, "rules": rules}}, "results": results}],
+    }
+    return json.dumps(sarif, indent=2) + "\n"

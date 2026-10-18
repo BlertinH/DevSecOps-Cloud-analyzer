@@ -16,11 +16,12 @@ from .graph import build_infrastructure_graph
 from .paths import build_attack_graph, find_attack_paths
 from .plan import get_references, get_resources, load_plan
 from .policy import decide, load_policy
-from .report import json_report, text_report
+from .report import json_report, sarif_report, text_report
 from .rules import run_rules
 
 
 def analyze(plan, policy):
+    """Run every step of the analysis and collect the results in one dictionary."""
     warnings = []
     resources = get_resources(plan, warnings)
     references = get_references(plan, resources, warnings)
@@ -49,8 +50,9 @@ def main(arguments=None):
     )
     parser.add_argument("plan", help="output of: terraform show -json tfplan")
     parser.add_argument("--policy", help="policy.json (default: fail_on high, no accepted services)")
-    parser.add_argument("--format", choices=["text", "json"], default="text")
+    parser.add_argument("--format", choices=["text", "json", "sarif"], default="text")
     parser.add_argument("--output", help="write the report to this file instead of the screen")
+    parser.add_argument("--source-dir", default=".", help="folder with the .tf files (for SARIF line numbers)")
     args = parser.parse_args(arguments)
 
     try:
@@ -59,6 +61,8 @@ def main(arguments=None):
         result = analyze(plan, policy)
         if args.format == "json":
             report = json_report(result)
+        elif args.format == "sarif":
+            report = sarif_report(result, args.source_dir)
         else:
             report = text_report(result)
     except Exception as error:  # fail closed: any error stops the pipeline
