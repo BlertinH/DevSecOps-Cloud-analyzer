@@ -1,0 +1,6 @@
+{
+  "fail_on": "high",
+  "accepted_public_services": [
+    {"resource": "aws_instance.web", "port": 443}
+  ]
+}
