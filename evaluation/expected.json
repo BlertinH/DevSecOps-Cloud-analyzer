@@ -1,0 +1,87 @@
+{
+  "scenarios": [
+    {
+      "name": "demo-insecure",
+      "plan": "tests/fixtures/demo-insecure.plan.json",
+      "policy": "terraform/demo-insecure/policy.json",
+      "gate": "BLOCK",
+      "findings": [
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.web_ssh_world", "target": "aws_instance.web", "severity": "high"},
+        {"rule": "CFG-02", "resource": "aws_iam_role_policy.app_s3", "target": "", "severity": "high"},
+        {"rule": "CFG-01", "resource": "aws_db_instance.main", "target": "", "severity": "high"},
+        {"rule": "PATH-01", "resource": "aws_db_instance.main", "target": "", "severity": "high"},
+        {"rule": "PATH-01", "resource": "aws_s3_bucket.data", "target": "", "severity": "high"}
+      ]
+    },
+    {
+      "name": "demo-secure",
+      "plan": "tests/fixtures/demo-secure.plan.json",
+      "policy": "terraform/demo-secure/policy.json",
+      "gate": "PASS",
+      "findings": []
+    },
+    {
+      "name": "routing",
+      "plan": "tests/fixtures/scenario-routing.plan.json",
+      "policy": null,
+      "gate": "BLOCK",
+      "findings": [
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.a_ssh_world", "target": "aws_instance.a_public", "severity": "high"},
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.b_ssh_world", "target": "aws_instance.b", "severity": "high"},
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.c_ssh_world", "target": "aws_instance.c", "severity": "high"}
+      ]
+    },
+    {
+      "name": "public-ip",
+      "plan": "tests/fixtures/scenario-public_ip.plan.json",
+      "policy": null,
+      "gate": "BLOCK",
+      "findings": [
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.ssh_world", "target": "aws_instance.inherits_auto", "severity": "high"},
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.ssh_world", "target": "aws_instance.opt_in", "severity": "high"},
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.ssh_world", "target": "aws_instance.with_eip", "severity": "high"},
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.ssh_world", "target": "aws_instance.with_eip_assoc", "severity": "high"}
+      ]
+    },
+    {
+      "name": "database",
+      "plan": "tests/fixtures/scenario-database.plan.json",
+      "policy": null,
+      "gate": "BLOCK",
+      "findings": [
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.app_ssh_world", "target": "aws_instance.app", "severity": "high"},
+        {"rule": "NET-02", "resource": "aws_db_instance.public_open", "target": "", "severity": "critical"},
+        {"rule": "PATH-01", "resource": "aws_db_instance.public_open", "target": "", "severity": "high"},
+        {"rule": "PATH-01", "resource": "aws_db_instance.flag_off", "target": "", "severity": "high"},
+        {"rule": "PATH-01", "resource": "aws_db_instance.private_flag_on", "target": "", "severity": "high"},
+        {"rule": "PATH-01", "resource": "aws_db_instance.internal", "target": "", "severity": "high"},
+        {"rule": "CFG-01", "resource": "aws_db_instance.public_open", "target": "", "severity": "high"},
+        {"rule": "CFG-01", "resource": "aws_db_instance.flag_off", "target": "", "severity": "high"},
+        {"rule": "CFG-01", "resource": "aws_db_instance.private_flag_on", "target": "", "severity": "high"},
+        {"rule": "CFG-01", "resource": "aws_db_instance.internal", "target": "", "severity": "high"}
+      ]
+    },
+    {
+      "name": "sg-rules",
+      "plan": "tests/fixtures/scenario-sg_rules.plan.json",
+      "policy": null,
+      "gate": "BLOCK",
+      "findings": [
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.range_world", "target": "aws_instance.range", "severity": "high"},
+        {"rule": "NET-01", "resource": "aws_vpc_security_group_ingress_rule.all_traffic_world", "target": "aws_instance.all_traffic", "severity": "high"},
+        {"rule": "NET-01", "resource": "aws_security_group_rule.legacy_ssh", "target": "aws_instance.legacy", "severity": "high"},
+        {"rule": "NET-01", "resource": "aws_security_group.inline", "target": "aws_instance.inline", "severity": "high"}
+      ]
+    },
+    {
+      "name": "iam",
+      "plan": "tests/fixtures/scenario-iam.plan.json",
+      "policy": null,
+      "gate": "PASS",
+      "findings": [
+        {"rule": "CFG-02", "resource": "aws_iam_role_policy.app_s3", "target": "", "severity": "medium"},
+        {"rule": "CFG-02", "resource": "aws_iam_policy.admin_all", "target": "", "severity": "medium"}
+      ]
+    }
+  ]
+}
