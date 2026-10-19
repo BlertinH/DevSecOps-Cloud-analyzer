@@ -1,0 +1,60 @@
+name: deploy
+
+on:
+  workflow_dispatch: # started by hand: Actions -> deploy -> Run workflow
+
+permissions:
+  contents: read
+  id-token: write # get a GitHub OIDC token, to sign in to AWS without keys
+
+concurrency:
+  group: demo-secure # never two deploys (or a deploy and a destroy) at the same time
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.ref == 'refs/heads/main' # only the protected main branch is deployed
+    runs-on: ubuntu-latest
+    env:
+      TF_DIR: terraform/demo-secure
+      TF_VAR_bucket_suffix: ${{ vars.DEMO_BUCKET_SUFFIX }}
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v6
+
+      - name: Sign in to AWS with the deploy role (OIDC, main only)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install iacgraph
+        run: pip install .
+
+      - name: Terraform plan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          terraform plan -input=false -out=tfplan
+          terraform show -json tfplan > plan.json
+
+      - name: Security gate on the exact plan that will be applied
+        run: iacgraph $TF_DIR/plan.json --policy $TF_DIR/policy.json
+
+      - name: Terraform apply (only if the gate passed)
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -input=false tfplan
+
+      - name: Show what was created
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform output

@@ -1,0 +1,40 @@
+name: destroy
+
+on:
+  workflow_dispatch: # started by hand: Actions -> destroy -> Run workflow
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: demo-secure
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      TF_DIR: terraform/demo-secure
+      TF_VAR_bucket_suffix: ${{ vars.DEMO_BUCKET_SUFFIX }}
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v6
+
+      - name: Sign in to AWS with the deploy role (OIDC, main only)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform destroy (delete everything of the demo, stop the costs)
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          terraform destroy -input=false -auto-approve
