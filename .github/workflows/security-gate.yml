@@ -6,21 +6,17 @@ on:
 permissions:
   contents: read
   id-token: write
-  security-events: write
 
 jobs:
   iacgraph:
     runs-on: ubuntu-latest
     env:
       TF_VAR_bucket_suffix: ${{ vars.DEMO_BUCKET_SUFFIX }}
-      SKIP: terraform/bootstrap terraform/scenarios terraform/demo-insecure
     steps:
       - name: Get the code
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
-      - name: Sign in to AWS with the read-only plan role (OIDC)
+      - name: Sign in to AWS (read-only role)
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
@@ -39,56 +35,13 @@ jobs:
       - name: Install iacgraph
         run: pip install .
 
-      - name: Find the Terraform folders to check
-        run: |
-          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- terraform | xargs -r -n1 dirname)
-          for dir in $(printf '%s\n' terraform/demo-secure $changed | sort -u); do
-            skip=no
-            for prefix in $SKIP; do
-              case "$dir" in "$prefix"|"$prefix"/*) skip=yes ;; esac
-            done
-            if [ "$skip" = no ] && ls "$dir"/*.tf > /dev/null 2>&1; then
-              echo "$dir" >> folders.txt
-            fi
-          done
-          cat folders.txt
-
       - name: Terraform plan
+        working-directory: terraform/demo-secure
         run: |
-          for dir in $(cat folders.txt); do
-            terraform -chdir="$dir" init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-            terraform -chdir="$dir" plan -input=false -out=tfplan
-            terraform -chdir="$dir" show -json tfplan > "$dir/plan.json"
-          done
-
-      - name: Write the findings as SARIF
-        run: |
-          mkdir -p sarif
-          for dir in $(cat folders.txt); do
-            name=$(echo "$dir" | tr '/' '-')
-            if [ -f "$dir/policy.json" ]; then
-              iacgraph "$dir/plan.json" --policy "$dir/policy.json" --format sarif --source-dir "$dir" --output "sarif/$name.sarif" || true
-            else
-              iacgraph "$dir/plan.json" --format sarif --source-dir "$dir" --output "sarif/$name.sarif" || true
-            fi
-          done
-          jq -s '.[0].runs[0].results = [.[].runs[0].results[]] | .[0]' sarif/*.sarif > results.sarif
-
-      - name: Show the findings in the Security tab
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: results.sarif
-          category: iacgraph
+          terraform init -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          terraform plan -out=tfplan
+          terraform show -json tfplan > plan.json
 
       - name: Security gate (PASS or BLOCK)
-        run: |
-          status=0
-          for dir in $(cat folders.txt); do
-            echo "===== $dir"
-            if [ -f "$dir/policy.json" ]; then
-              iacgraph "$dir/plan.json" --policy "$dir/policy.json" || status=1
-            else
-              iacgraph "$dir/plan.json" || status=1
-            fi
-          done
-          exit $status
+        working-directory: terraform/demo-secure
+        run: iacgraph plan.json --policy policy.json
